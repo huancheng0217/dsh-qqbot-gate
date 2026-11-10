@@ -1,6 +1,6 @@
 # dsh-qqbot-gate
 
-给 QQ 机器人加三道门：**「攒着说」**、**「该不该说」**、**「刚才聊了什么」**。
+给 QQ 机器人加五道门：**「攒着说」**、**「该不该说」**、**「听见什么」**、**「别让内部话漏出去」**、**「像人一样分几条发」**。
 
 不改官方插件、不 fork、不重启就生效；`mode: off` 一键回到没装过的样子。
 
@@ -27,7 +27,7 @@ QQ 消息
 
 ```bash
 # GitHub
-dsh plugin --profile <你的 profile> add github:<owner>/dsh-qqbot-gate
+dsh plugin --profile <你的 profile> add github:huancheng0217/dsh-qqbot-gate
 
 # 或者本地开发：clone 下来后 link
 dsh plugin --profile <你的 profile> add link:/path/to/dsh-qqbot-gate
@@ -76,8 +76,13 @@ dsh plugin --profile <你的 profile> add link:/path/to/dsh-qqbot-gate
 | 你连发三条，机器人回三次，且前言不搭后语 | 门一：防抖合并 |
 | 群里谁说话机器人都接，抢话、刷屏 | 门二：群聊唤醒判定 |
 | 机器人接话突兀，不知道刚才在聊什么 | 门三：旁听注入 |
+| 群里好玩的图/表情包一闪就过，找不回来 | 门三：拾荒采集 |
+| 机器人把自己的内部维护话术、工具报错发进群里 | 门四：出站过滤 |
+| 一整段长文糊成一坨，QQ 里没法读 | 门五：分段发送 |
 
-**它不改什么**：出站格式、流式、工具、审批、问答通道、会话管理，全部还是官方的。
+**它不改什么**：流式、工具调用、审批、问答通道、会话管理，全部还是官方的。
+
+> 开头那张图只画了门一、门二的主链路。门三到门五在下面各自的章节。
 
 ---
 
@@ -93,7 +98,27 @@ dsh plugin --profile <你的 profile> add link:/path/to/dsh-qqbot-gate
 
 ---
 
-## 群里什么时候会说话（`mode: gate`）
+## 门一 · 攒着说
+
+**问题**：你连发三条，机器人回三次——而且处理第一条的时候后面两条已经在排队，答案前言不搭后语。
+
+**做法**：把一小段时间内的连发**收口成一次** agent 请求。六条规则：
+
+| 规则 | 行为 |
+| --- | --- |
+| 滑动窗口 | 每来一条就重新计时，`debounceSeconds` 内没有新消息才算说完 |
+| 硬上限 | 到 `maxWaitSeconds` 强制作答——防「一直说话的人永远得不到回复」 |
+| 条数上限 | 攒到 `maxMergeMessages` 条立刻收口，不等计时器 |
+| 去重 | 同一个人发同一句话，窗口内只算一条 |
+| 带图更久 | 图片常有后续补充，单独用 `imageDebounceSeconds` |
+| 命令直通 | `/` 开头不缓冲，否则 `/stop` 也要等三秒 |
+
+被吸收的那几条**不会各自进 agent**，它们合成一条文本。带过附件的话会在合并文本里注明
+（附件本身没法合并，只有最后一条的会跟着走）。
+
+---
+
+## 门二 · 该不该说（`mode: gate`）
 
 **强唤醒 —— 一票通过，不看概率、不受冷却/疲劳限制：**
 
@@ -121,9 +146,9 @@ dsh plugin --profile <你的 profile> add link:/path/to/dsh-qqbot-gate
 
 ---
 
-## 门三：旁听注入（`mode: gate`）
+## 门三 · 旁听注入（`mode: gate`）
 
-**问题**：官方只在被 @ 时把群历史注入 agent（`inbound.js:209` 的 `if (!isGroup || !wasMentioned ...) return base`）。
+**问题**：官方只在被 @ 时把群历史注入 agent（`inbound.js` 里 `if (!isGroup || !wasMentioned ...) return base`）。
 所以群里没叫你的那些消息，门槛挡下之后就**没有任何人记得**——接话只能靠猜，看起来像突然插嘴。
 
 **做法**：
@@ -142,7 +167,7 @@ dsh plugin --profile <你的 profile> add link:/path/to/dsh-qqbot-gate
 
 3. `@` 的时候**不注入**：官方自己会带群历史，再来一份就重复了。
 
-**节省 token 的两个机关**：
+**节省 token 的三个机关**：
 
 - **时间窗 + 条数上限**：只看最近 `injectWindowMinutes` 内、最多 `injectMaxMessages` 条。
 - **游标**：同一段连续对话里，上一轮已经给过的内容不再重复灌。
@@ -153,7 +178,7 @@ dsh plugin --profile <你的 profile> add link:/path/to/dsh-qqbot-gate
 
 ---
 
-## 门三：拾荒采集
+## 门三 · 拾荒采集
 
 **问题**：群里好玩的图/表情包一闪就过，我没在场就再也找不回来了。而且 QQ 的图片链接是有时效的，过期就废。
 
@@ -190,6 +215,56 @@ _qqbot捡到的/
 **状态栏**：设置页顶部会多两个计数 —— `旁听：N 条 · 注入 M 次`、`拾荒：N 张（重 M）`，
 外加一个 `炼化：N 天前 / N 天没动 ⚠`（读 `_说话.md` 与 `_人际日记.md` 头部的「上次炼化」日期，
 超过 `forgeRemindDays` 就标 ⚠ —— 对应教训「记下来 ≠ 处理掉」）。
+
+---
+
+## 门四 · 出站过滤
+
+**问题**（2026-11-04 真事故）：记忆插件的 dream 会往当前会话注入指令，而 agent 的回复就是用户可见输出。
+QQ 群会话空闲 3 小时也会跑 dream，于是「记完了。这一轮落下的东西…」直接发进了群，连工具报错
+`FsError: FS_EDIT_NOT_FOUND` 都一起出去了。
+
+**做法**：这一层是**兜底**。真正治本的是别让 QQ 会话跑 dream（给会话打 dream_skip）；
+但真出问题（上下文被压缩、提示词被冲掉）时，得靠代码拦住。命中就**丢弃并记日志**，
+不抛错、不回复用户，静默得像没发生。
+
+**取舍**：只挡**几乎不可能出现在正常聊天里**的特征——记忆插件自己的标记、dream 收尾话术、
+`FsError` 这类工具报错、以及 Windows 绝对路径。不挡普通词（比如「记忆」），那会误伤群友的正常发言。
+
+| 项 | 说明 |
+| --- | --- |
+| 开关 | `outguardEnabled`（默认开） |
+| 内置规则 | 代码里的 `DEFAULT_PATTERNS`，改它要改代码 |
+| 为什么连路径也挡 | 群里只说「我的房间」，不说目录名 |
+
+---
+
+## 门五 · 分段发送
+
+**问题**：一整段长文糊在一个气泡里，QQ 客户端上就是没法读。
+
+**做法**：把一轮回复按标点切成几条依次发出，像人在打字。装在 `QQBot.prototype.sendMarkdown` 上，
+所以只影响文本，**图片/文件不走这条路**。
+
+**装载顺序有讲究**：分段必须包在门四外面
+（`splitter` 在外 → `outguard` 在内 → 原方法）。
+反过来的话，过滤会先看到整段长文，命中就整条吞掉，分段根本没机会跑。
+
+| 参数 | 说明 |
+| --- | --- |
+| `splitEnabled` | 默认**关**，要自己打开 |
+| `splitMode` | `group`（只群聊切，私聊一次说完）/ `all` / `off` |
+| `splitPattern` | 切分正则。**字符类里的 `\n` 不能删**——删了会丢没有标点的整行（见「已知限制」） |
+| `splitMaxSegments` | 一轮最多切几条，上限 4 |
+| `splitMinSegmentLength` | 短于这个字数的段会并进相邻段，避免「嗯。」单独成条 |
+| `splitDelayMs` | 两条之间停多久，像在打字 |
+| `splitSkipIfShorterThan` | 整条短于这个字数就不切 |
+| `splitSkipCodeAndTables` | 含代码块或表格不切（切开就散架了） |
+
+> **`splitMaxSegments` 为什么上限是 4**：`dsh-qqbot` 里写死了 `new ReplyLimiter({ limit: 4 })`，
+> 约束**同一条用户消息**能被被动回复几次。切成 N 条就消耗 N 次。
+> 切到 4 正好用满、一点余量不剩；留 3 是更稳的选择。
+> 超出的部分会先换缓存里别的 msgId 兜底，全都不可用才降级成主动推送（那要烧主动额度）。
 
 ---
 
@@ -243,26 +318,24 @@ _qqbot捡到的/
     collectDir: ''            # 空 = <工作区>/_qqbot捡到的
     forgeRemindDays: 7        # 两个笔记超过几天没炼就标 ⚠
 
+    # ── 门四：出站过滤（挡内部维护输出、工具报错、Windows 路径）──
+    outguardEnabled: true
+
+    # ── 门五：分段发送（默认关，要自己打开）──
+    splitEnabled: false
+    splitMode: group          # off | group | all
+    splitPattern: '.*?[。？！~…\n]+|.+$'   # 字符类里的 \n 不能删，删了会丢整行
+    splitMaxSegments: 3       # 上限 4（= ReplyLimiter limit），3 留一次余量
+    splitMinSegmentLength: 6
+    splitDelayMs: 300
+    splitSkipIfShorterThan: 20
+    splitSkipCodeAndTables: true
+
     debug: false              # true = 每条消息都打判定原因
 ```
 
 **`ownerOpenids`**：群里 `senderId` 和私聊 openid 是同一套 user openid。
 现成的可以从 `~/.dsh-qqbot/model-prefs.json` 里 `qqbot:<appId>:c2c:<openid>` 读出来。
-
----
-
-## 安装 / 卸载 / 回滚
-
-```bash
-# 安装（在 DSH 里用插件市场「添加插件」指向本地目录也行）
-# 本地目录随意，能跑就行
-```
-
-**三档回滚**：
-
-1. `config.mode: off` —— 空转，等于今天
-2. `config.enabled: false` —— 中间件直接不挂
-3. 从插件市场卸载 —— 不改官方包，卸载必然干净
 
 ---
 
@@ -313,15 +386,19 @@ SDK 每条消息都现拼链（`const chain = [...this.middlewares, downstream]`
 4. **群里不同人默认各成一批**（`groupMergeAcrossSenders: false`）。想"一句话回答两个人"再开。
 5. **群聊历史上下文**：官方只对 `wasMentioned` 的消息注入群历史（`inbound.js` 里 `if (!isGroup || !wasMentioned ...) return base`）。
    本插件的门三在 `gate` 模式下补这一段（见上文），debounce 模式下不补（省 token）。
-   旁听环**只在内存里**：插件重载就清空，最多丢十几分钟的闲聊；落盘属于「拾荒采集」那一期。
+   旁听环**只在内存里**：插件重载就清空，最多丢十几分钟的闲聊；要落盘得靠「拾荒采集」。
 6. **待答问题会晚 3 秒**：用户在等 `ask_user_question` 的答案时回一句「1」，这条也要过防抖窗口。3 秒不影响功能（官方超时 5 分钟）。
+7. **分段正则有坑，动它要跑测试**：`String.match(re, 'g')` 会**静默丢掉没匹配到的片段**。
+   旧的 `.*?[。？！~…]+|.+$` 里 `.` 不匹配换行，所以「一整行没有标点」的行匹配不上、整行消失
+   （实测 5 个样本丢 4 个，最长吞掉开头一整段）。把它加进字符类后拼回才完整。
+   `tests/splitter.test.mjs` 里有一条专门断言 `parts.join('') === 原文` 的回归测试，别删。
 
 ---
 
 ## 下一步（如果愿意继续做）
 
-- ~~**群聊历史注入**~~：已做（门三）。
-- **拾荒采集**：群里好玩的图/梗攒下来，等主人在私聊窗口里递给他（含附件下载、去重、保留期、投递礼节）。
+- ~~**群聊历史注入**~~：已做（门三 · 旁听）。
+- ~~**拾荒采集**~~：已做（门三 · 拾荒），含下载、去重、保留期。**投递仍靠模型自己判断**——插件只负责存。
 - **主动插话**：冷场定时器 + 每群每日上限，属于另一条通道（"没人理它它主动说"）。
 - **小模型智能收口**：只有"疑似半句话"时才问一次小模型，比固定窗口更聪明，代价是延迟和成本。
 - **提 PR 给官方**：加 `debounce` 配置项 + 暴露 bot 实例给其他插件。PR 合并后本插件可以退化成薄配置层。
@@ -332,14 +409,16 @@ SDK 每条消息都现拼链（`const chain = [...this.middlewares, downstream]`
 
 ```bash
 cd _plugins/dsh-qqbot-gate
-node tests/config.test.mjs       # 配置夹紧
-node tests/merge.test.mjs        # 合并文本
-node tests/gate.test.mjs         # 判定管线（19 条）
-node tests/debounce.test.mjs     # 防抖六条规则（虚拟时钟）
-node tests/hook.test.mjs         # 钩子与热重载
-node tests/inject.test.mjs       # 旁听环 + 背景拼装（18 条）
-node tests/collect-media.test.mjs # 拾荒采集：魔数/去重/限流/清理（8 条）
-node tests/forge.test.mjs        # 「上次炼化」读取与超期判断（3 条）
+node tests/config.test.mjs        # 配置夹紧、默认值
+node tests/merge.test.mjs         # 文本合并、群标识取哪个字段
+node tests/gate.test.mjs          # 门二判定管线：强唤醒/打分/概率/冷却/疲劳
+node tests/debounce.test.mjs      # 门一六条规则（虚拟时钟，不用真等）
+node tests/inject.test.mjs        # 门三旁听环 + 背景拼装
+node tests/collect-media.test.mjs # 门三拾荒：魔数识别/去重/限流/清理
+node tests/forge.test.mjs         # 「上次炼化」读取与超期判断
+node tests/outguard.test.mjs      # 门四：该挡的挡、不该挡的不误杀
+node tests/splitter.test.mjs      # 门五：切点、条数上限、**不丢字**
+node tests/hook.test.mjs          # 钩子、幂等、热重载
 node tests/integration.chain.test.mjs  # 塞进真 SDK 中间件链跑
 ```
 
