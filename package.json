@@ -34,9 +34,21 @@
   "keywords": [
     "dsh",
     "dsh-plugin",
+    "deepseek-harness",
     "qqbot",
+    "qq-bot",
     "debounce",
-    "gate"
+    "gate",
+    "chatbot"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huancheng0217/dsh-qqbot-gate.git"
+  },
+  "homepage": "https://github.com/huancheng0217/dsh-qqbot-gate#readme",
+  "bugs": {
+    "url": "https://github.com/huancheng0217/dsh-qqbot-gate/issues"
+  },
+  "author": "huancheng0217",
   "license": "MIT"
 }

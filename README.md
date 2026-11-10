@@ -4,6 +4,11 @@
 
 不改官方插件、不 fork、不重启就生效；`mode: off` 一键回到没装过的样子。
 
+> **适配版本**：在 `@tencent-connect/dsh-qqbot` **0.5.5** + `@tencent-connect/qqbot-nodejs` **1.0.5** 上验证通过。
+> 本插件钩的是 SDK 内部契约（`QQBot.prototype.use` / `middlewares` / `handleInboundMessage`），
+> 换了版本不一定工作——**但不会把机器人搞坏**：钩子装不上时会自检失败并降级，
+> 所有功能失效、官方插件照常收发行，原因写在 `~/.dsh-qqbot/gate-status.json` 的 `hook` 段。
+
 ```
 QQ 消息
   │
