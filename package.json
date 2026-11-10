@@ -1,0 +1,42 @@
+{
+  "name": "dsh-qqbot-gate",
+  "version": "0.1.0",
+  "private": true,
+  "description": "给 QQ 机器人加两道门：连发消息合并成一次请求（防抖），群聊里按 @/点名/主人/提问打分/兴趣概率/冷却/疲劳决定要不要接话。作用在 QQBot 中间件链最外层，不改官方插件。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "tests"
+  ],
+  "scripts": {
+    "test": "node --test tests/"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "qqbot",
+    "debounce",
+    "gate"
+  ],
+  "license": "MIT"
+}

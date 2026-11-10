@@ -1,0 +1,44 @@
+# 回话门槛：mode=debounce 只合并连发消息，不筛群聊内容。
+# 跑稳两天后把 mode 改成 gate 打开群聊门槛（改完由宿主热重载，不用重启）。
+- insert:
+    - id: qqbot-gate
+      name: dsh-qqbot-gate
+      config:
+        enabled: true
+        mode: debounce
+
+        # ── 门一：攒着说 ──
+        debounceSeconds: 3
+        maxWaitSeconds: 12
+        maxMergeMessages: 8
+        imageDebounceSeconds: 8
+        dedupeWindowSeconds: 30
+
+        # ── 门二：该不该说（mode=gate 时生效）──
+        groupMode: open
+        groupAllow: []
+        groupDeny: []
+        # 让你在最该被回的那个人：填你的 QQ user openid，一行一个。
+        # 去哪找：设置页「回话门槛 → 最近的判定与收口」右侧那列，
+        # 或读 ~/.dsh-qqbot/model-prefs.json 里 qqbot:<appId>:c2c:<openid>。
+        ownerOpenids: []
+        # 点名也算强唤醒
+        botNames:
+          - 鲸鱼
+          - 女仆
+          - D酱
+          - 鲸鲸
+          - 小鲸
+        takeOverMentionGate: true
+        # 空 = 不启用兴趣概率；跑一周日志后再决定填什么
+        interestKeywords: []
+        interestProbability: 9
+        questionThreshold: 65
+        cooldownSeconds: 90
+        fatigueLimit: 5
+        fatigueWindowSeconds: 300
+        # 0 = 关闭冷场唤醒（暂未启用）
+        coldGroupIdleMinutes: 0
+        groupMergeAcrossSenders: false
+
+        debug: false

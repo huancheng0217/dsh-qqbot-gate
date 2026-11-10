@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="QQ 回话门槛">
+  <rect width="64" height="64" rx="14" fill="#16305a"/>
+  <path d="M17 15v34" stroke="#e8f1ff" stroke-width="5" stroke-linecap="round"/>
+  <path d="M47 15v34" stroke="#e8f1ff" stroke-width="5" stroke-linecap="round"/>
+  <path d="M22 23h20M22 32h20M22 41h20" stroke="#7fc4ff" stroke-width="4" stroke-linecap="round"/>
+  <path d="M32 12v40" stroke="#e8f1ff" stroke-width="3.5" stroke-linecap="round" opacity="0.4"/>
+</svg>

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "QQ Reply Gate",
+    "description": "Merges burst messages into one request, and decides whether the bot should answer in group chats (mention, name call, owner, question scoring, interest probability, cooldown and fatigue) while still listening silently."
+  }
+}
