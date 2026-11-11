@@ -270,16 +270,27 @@ QQ 群会话空闲 3 小时也会跑 dream，于是「记完了。这一轮落�
 （`splitter` 在外 → `outguard` 在内 → 原方法）。
 反过来的话，过滤会先看到整段长文，命中就整条吞掉，分段根本没机会跑。
 
+**切分规则**（2026-11-11 重写，不再用正则）：
+
+1. **空行是硬边界**——原文用空行分好的段，一段一条，绝不跨段落再切
+2. **切点优先级**——句末（`。！？…~?!`）> 分号 > 逗号；有句末标点就只按句末切，没有才降级
+3. **配对保护**——扫描时维护引号/括号深度，`他说「十块。」` 里的句号不是切点
+4. **最短段**——不足设定字数的段并进相邻段（只对按标点切出来的段生效，空行分段不受影响）
+5. **条数上限**——超了前 N−1 条各一条，剩下全并进最后一条，一个字都不丢
+
 | 参数 | 说明 |
 | --- | --- |
 | `splitEnabled` | 默认**关**，要自己打开 |
 | `splitMode` | `group`（只群聊切，私聊一次说完）/ `all` / `off` |
-| `splitPattern` | 切分正则。**字符类里的 `\n` 不能删**——删了会丢没有标点的整行（见「已知限制」） |
 | `splitMaxSegments` | 一轮最多切几条，上限 4 |
-| `splitMinSegmentLength` | 短于这个字数的段会并进相邻段，避免「嗯。」单独成条 |
+| `splitMinSegmentLength` | 短于这个字数的段会并进相邻段，避免「嗯。」单独成条（默认 12） |
 | `splitDelayMs` | 两条之间停多久，像在打字 |
 | `splitSkipIfShorterThan` | 整条短于这个字数就不切 |
 | `splitSkipCodeAndTables` | 含代码块或表格不切（切开就散架了） |
+
+> **以前那个 `splitPattern` 没了**。它是一条正则，会在我已经分好的段落里二次切割——
+> 「他说『十块。』」的切口正好落在引号中间。现在规则内置在 `splitter.js`，
+> 老配置里留着的 `splitPattern` 会被忽略，不用清。
 
 > **`splitMaxSegments` 为什么上限是 4**：`dsh-qqbot` 里写死了 `new ReplyLimiter({ limit: 4 })`，
 > 约束**同一条用户消息**能被被动回复几次。切成 N 条就消耗 N 次。
@@ -353,9 +364,8 @@ QQ 群会话空闲 3 小时也会跑 dream，于是「记完了。这一轮落�
     # ── 门五：分段发送（默认关，要自己打开）──
     splitEnabled: false
     splitMode: group          # off | group | all
-    splitPattern: '.*?[。？！~…\n]+|.+$'   # 字符类里的 \n 不能删，删了会丢整行
     splitMaxSegments: 3       # 上限 4（= ReplyLimiter limit），3 留一次余量
-    splitMinSegmentLength: 6
+    splitMinSegmentLength: 12
     splitDelayMs: 300
     splitSkipIfShorterThan: 20
     splitSkipCodeAndTables: true
@@ -417,10 +427,10 @@ SDK 每条消息都现拼链（`const chain = [...this.middlewares, downstream]`
    本插件的门三在 `gate` 模式下补这一段（见上文），debounce 模式下不补（省 token）。
    旁听环**只在内存里**：插件重载就清空，最多丢十几分钟的闲聊；要落盘得靠「拾荒采集」。
 6. **待答问题会晚 3 秒**：用户在等 `ask_user_question` 的答案时回一句「1」，这条也要过防抖窗口。3 秒不影响功能（官方超时 5 分钟）。
-7. **分段正则有坑，动它要跑测试**：`String.match(re, 'g')` 会**静默丢掉没匹配到的片段**。
-   旧的 `.*?[。？！~…]+|.+$` 里 `.` 不匹配换行，所以「一整行没有标点」的行匹配不上、整行消失
-   （实测 5 个样本丢 4 个，最长吞掉开头一整段）。把它加进字符类后拼回才完整。
-   `tests/splitter.test.mjs` 里有一条专门断言 `parts.join('') === 原文` 的回归测试，别删。
+7. **分段规则改动要跑测试**：切分必须保证「首尾相接能拼回原文」，`tests/splitter.test.mjs` 里有断言
+   「去掉空白后与原文一致」。这里栽过两次：2026-11-10 是切分正则把没标点的整行**静默丢掉**
+   （`String.match(re,'g')` 只返回匹配到的片段，不返回间隙）；2026-11-11 是正则在已经分好的段落里
+   **二次切割**、切口落进引号中间。改完跑一次那个测试。
 
 ---
 

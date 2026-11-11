@@ -1,186 +1,238 @@
-import { test } from 'node:test'
-import assert from 'node:assert'
-import { splitText, DEFAULT_PATTERN, DEFAULTS, installSplitter } from '../lib/splitter.js'
+import assert from 'node:assert/strict'
+import test from 'node:test'
 
-// 默认配置会把短句合并（minSegmentLength=6），多数用例要关掉它才好验证切分本身
-const base = { ...DEFAULTS, skipIfShorterThan: 1, minSegmentLength: 1 }
+import { DEFAULTS, findCutPoints, installSplitter, splitByPunctuation, splitText } from '../lib/splitter.js'
 
-test('按标点切成三段', () => {
-  const segs = splitText('今天群里好热闹。有人发了个新作。我看了一下。', base)
-  assert.deepEqual(segs, ['今天群里好热闹。', '有人发了个新作。', '我看了一下。'])
+/** 测试里放宽门槛，单独验证切分逻辑本身 */
+const loose = { skipIfShorterThan: 1, minSegmentLength: 4, maxSegments: 4, skipCodeAndTables: true }
+
+const norm = (s) => String(s ?? '').replace(/\s+/g, '')
+
+// ── 规则 ①：空行是硬边界 ─────────────────────────────────
+test('空行是硬边界：段落内部不再切', () => {
+  const t = '第一段有句子。还有一句。\n\n第二段也有一句。'
+  const segs = splitText(t, loose)
+  assert.deepEqual(segs, ['第一段有句子。还有一句。', '第二段也有一句。'])
 })
 
-test('短于 skipIfShorterThan 不切', () => {
-  assert.equal(splitText('好的。', { ...base, skipIfShorterThan: 20 }), null)
+test('空行分段数量不超过上限时，一段一条', () => {
+  const t = '甲段内容够长了。\n\n乙段内容也够长了。\n\n丙段同理。'
+  const segs = splitText(t, { ...loose, maxSegments: 3 })
+  assert.deepEqual(segs, ['甲段内容够长了。', '乙段内容也够长了。', '丙段同理。'])
 })
 
-test('没有标点不切', () => {
-  assert.equal(splitText('这一句话没有任何结尾标点', base), null)
-})
-
-test('超过上限时尾巴并进最后一条且不丢字', () => {
-  const src = '一。二。三。四。五。六。'
-  const segs = splitText(src, { ...base, maxSegments: 3 })
+test('空行段数超过上限：前 N-1 各一条，剩余并进最后一条', () => {
+  const t = '一号够长了。\n\n二号够长了。\n\n三号够长了。\n\n四号够长了。'
+  const segs = splitText(t, { ...loose, maxSegments: 3 })
   assert.equal(segs.length, 3)
-  assert.equal(segs.join(''), src)
-  assert.equal(segs[0], '一。')
-  assert.equal(segs[1], '二。')
-  assert.equal(segs[2], '三。四。五。六。')
+  assert.equal(segs[0], '一号够长了。')
+  assert.match(segs[2], /三号够长了。[\s\S]*四号够长了。/)
 })
 
-test('上限压到 4 也不超过 ReplyLimiter', () => {
-  const src = '一。二。三。四。五。六。七。'
-  const segs = splitText(src, { ...base, maxSegments: 4 })
-  assert.ok(segs.length <= 4)
-  assert.equal(segs.join(''), src)
+// ── 规则 ②：切点优先级 ───────────────────────────────────
+test('有句末标点时只按句末切，不碰逗号', () => {
+  const t = '第一句很短，但有逗号。第二句也是，同样有逗号。'
+  const segs = splitText(t, loose)
+  assert.deepEqual(segs, ['第一句很短，但有逗号。', '第二句也是，同样有逗号。'])
 })
 
-test('短段并进前一段（防「嗯。」单独一条）', () => {
-  const segs = splitText('今天天气不错。嗯。我们出去走走吧。', { ...base, minSegmentLength: 6 })
-  assert.ok(segs.length <= 2, `期望合并后不超过 2 段，实际 ${JSON.stringify(segs)}`)
-  assert.equal(segs.join(''), '今天天气不错。嗯。我们出去走走吧。')
+test('没有句末标点才降级用分号', () => {
+  const t = '前半句甲；后半句乙；再来一段丙'
+  const segs = splitText(t, loose)
+  assert.deepEqual(segs, ['前半句甲；', '后半句乙；', '再来一段丙'])
 })
 
-test('第一段太短则并进后一段', () => {
-  const segs = splitText('嗯。我们出去走走吧。', { ...base, minSegmentLength: 6 })
-  // 只有两段且第一段短 → 合并成一段 → 返回 null（不切）
-  assert.equal(segs, null)
+test('连分号都没有才用逗号', () => {
+  const t = '甲甲甲，乙乙乙，丙丙丙'
+  const segs = splitText(t, { ...loose, minSegmentLength: 1 })
+  assert.deepEqual(segs, ['甲甲甲，', '乙乙乙，', '丙丙丙'])
+})
+
+test('一个标点都没有就不切', () => {
+  assert.equal(splitText('一二三四五六七八九十十一十二', loose), null)
+})
+
+test('连续标点算一处切点（「？！」不切两刀）', () => {
+  const t = '真的吗？！我想想。再说吧。'
+  const segs = splitText(t, loose)
+  assert.deepEqual(segs, ['真的吗？！', '我想想。', '再说吧。'])
+})
+
+// ── 规则 ③：配对保护 ─────────────────────────────────────
+test('引号里的句号不是切点（「十块。」不会被劈开）', () => {
+  const t = '他说「十块。」我点头。然后我们都笑了。'
+  const segs = splitText(t, loose)
+  assert.deepEqual(segs, ['他说「十块。」我点头。', '然后我们都笑了。'])
+})
+
+test('括号里的标点也不切', () => {
+  const t = '他停顿了一下（其实就是顿了顿。）然后继续。后面还有一句。'
+  const segs = splitText(t, loose)
+  assert.deepEqual(segs, ['他停顿了一下（其实就是顿了顿。）然后继续。', '后面还有一句。'])
+})
+
+test('findCutPoints 在配对内部不返回切点', () => {
+  // 引号里的两个句号跳过，只有最后一个句号是切点（at 指向标点之后）
+  assert.deepEqual(findCutPoints('「甲。乙。」丙。').map((p) => p.at), [8])
+  // 引号压根没配对时整段都不切——保守：不确定就不动刀
+  assert.deepEqual(findCutPoints('「甲。乙。'), [])
+})
+
+// ── 规则 ④：最短段合并 ───────────────────────────────────
+test('空行分段的短段不会被字数合并（作者排版优先）', () => {
+  // 2026-11-11 修：这两段各 8 字，minSegmentLength=20 时旧实现会把它们并成一段，整条不切
+  const t = '第一段我说完了。\n\n第二段也写完了。'
+  const segs = splitText(t, { ...loose, minSegmentLength: 20 })
+  assert.deepEqual(segs, ['第一段我说完了。', '第二段也写完了。'])
+})
+
+test('过短的段并进相邻段，不单独成条', () => {
+  // 「好。」只有 2 字，会被并走；并完只剩一段 → 不切
+  assert.equal(splitText('好。这是一段足够长的话。', { ...loose, minSegmentLength: 12 }), null)
+})
+
+test('中间的短段并进前一段', () => {
+  const t = '这是一段很长很长的开头。嗯。这是结尾的另一段话而且它也足够长。'
+  const segs = splitText(t, { ...loose, minSegmentLength: 12 })
+  assert.deepEqual(segs, ['这是一段很长很长的开头。嗯。', '这是结尾的另一段话而且它也足够长。'])
+})
+
+// ── 规则 ⑤：条数上限 ─────────────────────────────────────
+test('超过上限的部分并进最后一条', () => {
+  const t = '第一句在这里。第二句在这里。第三句在这里。第四句在这里。'
+  const segs = splitText(t, { ...loose, maxSegments: 3 })
+  assert.equal(segs.length, 3)
+  assert.equal(segs[2], '第三句在这里。第四句在这里。')
+})
+
+test('上限被夹在 1..4', () => {
+  const t = '甲。乙。丙。丁。戊。己。'
+  const segs = splitText(t, { ...loose, minSegmentLength: 1, maxSegments: 99 })
+  assert.equal(segs.length, 4)
+})
+
+// ── 不丢字 ──────────────────────────────────────────────
+test('切分不丢字：去掉空白后与原文一致', () => {
+  const samples = [
+    '第一段没标点\n第二段有句号。第三段也没标点',
+    '他说「十块。」我点头。然后我们都笑了。',
+    '甲段内容。\n\n乙段内容。\n\n丙段内容。\n\n丁段内容。',
+    '一整段完全没有句号只有逗号，这样，那样，最后结束',
+  ]
+  for (const t of samples) {
+    const segs = splitText(t, { ...loose, minSegmentLength: 1 })
+    const joined = (segs ?? [t]).join('')
+    assert.equal(norm(joined), norm(t), `丢了内容: ${JSON.stringify(t)}`)
+  }
+})
+
+// ── 不该切的情况 ─────────────────────────────────────────
+test('太短不切', () => {
+  assert.equal(splitText('短。', { ...loose, skipIfShorterThan: 20 }), null)
 })
 
 test('含代码块不切', () => {
-  const src = '看这个：\n```js\nconsole.log(1)\n```\n就这样。'
-  assert.equal(splitText(src, base), null)
+  assert.equal(splitText('看这个。\n```js\nconst a = 1。\n```\n完了。', loose), null)
 })
 
 test('含表格不切', () => {
-  const src = '结果如下：\n| a | b |\n| --- | --- |\n完了。'
-  assert.equal(splitText(src, base), null)
+  assert.equal(splitText('表格如下。\n| a | b |\n|---|---|\n| 1 | 2 |\n结束。', loose), null)
 })
 
 test('关掉代码表格保护后照切', () => {
-  const src = '看这个。\n```js\nx\n```\n就这样。'
-  assert.notEqual(splitText(src, { ...base, skipCodeAndTables: false }), null)
+  const segs = splitText('看这个。\n```js\nconst a = 1。\n```\n完了。', { ...loose, skipCodeAndTables: false })
+  assert.ok(segs && segs.length > 1)
 })
 
-test('坏正则会退回不切而不是抛错', () => {
-  assert.equal(splitText('一二三。四五六。', { ...base, pattern: '(' }), null)
+test('空文本返回 null', () => {
+  assert.equal(splitText('', loose), null)
+  assert.equal(splitText('   ', loose), null)
 })
 
-test('问号叹号省略号波浪号都算标点', () => {
-  // 四句 → 默认上限 3 会把尾巴合并，所以这里放到 4 来验证四种标点都被识别
-  const segs = splitText('真的吗？太好了！等等……好吧~', { ...base, maxSegments: 4 })
-  assert.ok(segs)
-  assert.equal(segs.length, 4)
-  assert.deepEqual(segs, ['真的吗？', '太好了！', '等等……', '好吧~'])
+// ── 默认值 ──────────────────────────────────────────────
+test('默认最短段是 12 字、条数上限 3', () => {
+  assert.equal(DEFAULTS.minSegmentLength, 12)
+  assert.equal(DEFAULTS.maxSegments, 3)
 })
 
-test('默认正则是风言枫语那条 + 换行符（换行不是装饰，见下一条）', () => {
-  assert.equal(DEFAULT_PATTERN, String.raw`.*?[。？！~…\n]+|.+$`)
-})
-
-test('回归：切分正则不能丢内容（没有标点的整行曾经会被整行吞掉）', () => {
-  // `String.match(re, 'g')` 只返回匹配到的片段，没匹配上的直接被丢掉。
-  // 旧正则 `.` 不匹配换行 → 一行没标点就匹配不上 → 整行消失。
-  const samples = [
-    '第一段没有标点\n第二段有句号。第三段也没标点',
-    '重新排版：\n题｜同一句玩笑\n句式是变体\n① 晚安，祝能梦到电子饭',
-    '第一句是祝。他知道我做不到，还是祝了。\n第二句是在追。',
-    '末尾有换行\n',
-  ]
-  for (const text of samples) {
-    const parts = text.match(new RegExp(DEFAULT_PATTERN, 'g')) ?? []
-    assert.equal(parts.join(''), text, `内容被丢掉了: ${JSON.stringify(text)}`)
-  }
-})
-
-test('默认关：装上但纯透传（开关能热生效的前提）', async () => {
-  const calls = []
-  const proto = {
+// ── installSplitter ─────────────────────────────────────
+function fakeProto(record) {
+  return {
     sendMarkdown: async (target, content) => {
-      calls.push(content)
+      record.push(content)
       return { ok: true }
     },
   }
+}
+
+test('默认关：装上但纯透传', async () => {
+  const calls = []
+  const proto = fakeProto(calls)
   const r = installSplitter(proto, { enabled: false })
-  assert.equal(r.ok, true) // 装上了，只是不开
+  assert.equal(r.ok, true)
   assert.equal(proto.sendMarkdown.__qgateSplit, true)
-  await proto.sendMarkdown({ scope: 'group' }, '第一句。第二句。第三句。')
+  await proto.sendMarkdown({ scope: 'group' }, '第一句。第二句。')
   assert.equal(calls.length, 1)
-  assert.equal(calls[0], '第一句。第二句。第三句。')
 })
 
 test('enabled 走 getter：运行中打开就立刻生效', async () => {
   const calls = []
-  const proto = {
-    sendMarkdown: async (target, content) => {
-      calls.push(content)
-      return { ok: true }
-    },
-  }
-  let live = { enabled: false, mode: 'group', delayMs: 0, skipIfShorterThan: 1, minSegmentLength: 1 }
-  installSplitter(proto, () => live)
-
-  await proto.sendMarkdown({ scope: 'group' }, '第一句。第二句。第三句。')
-  assert.equal(calls.length, 1, '关着时应整段发')
-
-  live = { ...live, enabled: true } // 模拟设置页打开开关
-  await proto.sendMarkdown({ scope: 'group' }, '第一句。第二句。第三句。')
-  assert.equal(calls.length, 4, '打开后应切成 3 条')
+  const proto = fakeProto(calls)
+  let cfg = { enabled: false, mode: 'all', minSegmentLength: 1, maxSegments: 4, skipIfShorterThan: 1 }
+  installSplitter(proto, () => cfg)
+  await proto.sendMarkdown({ scope: 'group' }, '第一句。第二句。')
+  assert.equal(calls.length, 1)
+  cfg = { ...cfg, enabled: true }
+  await proto.sendMarkdown({ scope: 'group' }, '第一句。第二句。')
+  assert.equal(calls.length, 3)
 })
 
 test('装好后按段调用原方法', async () => {
   const calls = []
-  const proto = {
-    sendMarkdown: async (target, content) => {
-      calls.push(content)
-      return { ok: true, content }
-    },
-  }
-  installSplitter(proto, { ...base, enabled: true, mode: 'group', delayMs: 0 }, () => {}, {})
-  await proto.sendMarkdown({ scope: 'group' }, '第一句。第二句。第三句。')
-  assert.deepEqual(calls, ['第一句。', '第二句。', '第三句。'])
+  const proto = fakeProto(calls)
+  installSplitter(proto, { enabled: true, mode: 'all', minSegmentLength: 1, maxSegments: 4, skipIfShorterThan: 1, delayMs: 0 })
+  await proto.sendMarkdown({ scope: 'group' }, '甲句。乙句。')
+  assert.deepEqual(calls, ['甲句。', '乙句。'])
 })
 
 test('mode=group 时私聊不切', async () => {
   const calls = []
-  const proto = {
-    sendMarkdown: async (target, content) => {
-      calls.push(content)
-      return {}
-    },
-  }
-  installSplitter(proto, { ...base, enabled: true, mode: 'group', delayMs: 0 }, () => {}, {})
-  await proto.sendMarkdown({ scope: 'c2c' }, '第一句。第二句。第三句。')
+  const proto = fakeProto(calls)
+  installSplitter(proto, { enabled: true, mode: 'group', minSegmentLength: 1, maxSegments: 4, skipIfShorterThan: 1, delayMs: 0 })
+  await proto.sendMarkdown({ scope: 'c2c' }, '甲句。乙句。')
   assert.equal(calls.length, 1)
-  assert.equal(calls[0], '第一句。第二句。第三句。')
 })
 
 test('mode=all 时私聊也切', async () => {
   const calls = []
-  const proto = {
-    sendMarkdown: async (target, content) => {
-      calls.push(content)
-      return {}
-    },
-  }
-  installSplitter(proto, { ...base, enabled: true, mode: 'all', delayMs: 0 }, () => {}, {})
-  await proto.sendMarkdown({ scope: 'c2c' }, '第一句。第二句。第三句。')
-  assert.equal(calls.length, 3)
+  const proto = fakeProto(calls)
+  installSplitter(proto, { enabled: true, mode: 'all', minSegmentLength: 1, maxSegments: 4, skipIfShorterThan: 1, delayMs: 0 })
+  await proto.sendMarkdown({ scope: 'c2c' }, '甲句。乙句。')
+  assert.equal(calls.length, 2)
 })
 
 test('原方法抛错时退回整段重发', async () => {
-  let attempt = 0
   const calls = []
+  let first = true
   const proto = {
-    sendMarkdown: async (target, content) => {
-      attempt += 1
+    sendMarkdown: async (_t, content) => {
       calls.push(content)
-      if (attempt === 2) throw new Error('boom')
-      return {}
+      if (first) {
+        first = false
+        throw new Error('boom')
+      }
+      return { ok: true }
     },
   }
-  installSplitter(proto, { ...base, enabled: true, mode: 'group', delayMs: 0 }, () => {}, {})
-  await proto.sendMarkdown({ scope: 'group' }, '第一句。第二句。第三句。')
-  // 第一条成功、第二条失败 → catch 里退回整段
-  assert.equal(calls[calls.length - 1], '第一句。第二句。第三句。')
+  installSplitter(proto, { enabled: true, mode: 'all', minSegmentLength: 1, maxSegments: 4, skipIfShorterThan: 1, delayMs: 0 })
+  await proto.sendMarkdown({ scope: 'group' }, '甲句。乙句。')
+  assert.equal(calls[calls.length - 1], '甲句。乙句。')
+})
+
+// ── splitByPunctuation 单独测 ───────────────────────────
+test('splitByPunctuation 优先句末、其次分号、最后逗号', () => {
+  assert.deepEqual(splitByPunctuation('甲。乙'), ['甲。', '乙'])
+  assert.deepEqual(splitByPunctuation('甲；乙'), ['甲；', '乙'])
+  assert.deepEqual(splitByPunctuation('甲，乙'), ['甲，', '乙'])
+  assert.deepEqual(splitByPunctuation('甲乙丙'), ['甲乙丙'])
 })
