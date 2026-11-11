@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { normalizeConfig } from '../lib/config.js'
-import { createGateState, decide, recordAnswer, scoreQuestion, wasMentioned } from '../lib/gate.js'
+import { createGateState, decide, isPeakQuietTime, recordAnswer, scoreQuestion, wasMentioned } from '../lib/gate.js'
 
 const APP = '1234567890'
 // 用假的 openid：真实值不该跟着代码进公开仓库
@@ -231,4 +231,95 @@ test('冷场打开后，静默够久有人开口 → 回', () => {
   const r = decide(groupMsg({ content: '有人在吗' }), cfg, state, env(30 * 60_000))
   assert.equal(r.answer, true)
   assert.equal(r.reason, 'cold_group')
+})
+
+// ── 峰时省话（DeepSeek 峰谷计价）──────────────────────────────
+/** 本地时间构造，避免测试依赖进程时区 */
+const at = (y, mo, d, h, mi = 0) => new Date(y, mo - 1, d, h, mi).getTime()
+
+test('isPeakQuietTime：工作日峰时 / 午休 / 夜间 / 周末', () => {
+  const cfg = cfgOf({})
+  assert.equal(isPeakQuietTime(at(2026, 11, 10, 10, 30), cfg), true, '周二 10:30 是峰时')
+  assert.equal(isPeakQuietTime(at(2026, 11, 10, 9, 0), cfg), true, '09:00 整点是峰时起点')
+  assert.equal(isPeakQuietTime(at(2026, 11, 10, 11, 59), cfg), true, '11:59 还在峰时')
+  assert.equal(isPeakQuietTime(at(2026, 11, 10, 12, 0), cfg), false, '12:00 进午休谷时')
+  assert.equal(isPeakQuietTime(at(2026, 11, 10, 13, 30), cfg), false, '13:30 谷时')
+  assert.equal(isPeakQuietTime(at(2026, 11, 10, 14, 30), cfg), true, '14:30 又进峰时')
+  assert.equal(isPeakQuietTime(at(2026, 11, 10, 18, 0), cfg), false, '18:00 收工')
+  assert.equal(isPeakQuietTime(at(2026, 11, 10, 22, 0), cfg), false, '深夜谷时')
+  assert.equal(isPeakQuietTime(at(2026, 11, 14, 10, 30), cfg), false, '周六全天谷时')
+})
+
+test('isPeakQuietTime：关掉「只工作日」后周末也算峰时', () => {
+  const cfg = cfgOf({ peakQuietWeekdaysOnly: false })
+  assert.equal(isPeakQuietTime(at(2026, 11, 14, 10, 30), cfg), true)
+})
+
+test('isPeakQuietTime：自定义时段与跨零点段', () => {
+  const cfg = cfgOf({ peakQuietWindows: '22:00-02:00' })
+  assert.equal(isPeakQuietTime(at(2026, 11, 10, 23, 0), cfg), true, '23:00 在跨零点段里')
+  assert.equal(isPeakQuietTime(at(2026, 11, 10, 1, 0), cfg), true, '01:00 也在')
+  assert.equal(isPeakQuietTime(at(2026, 11, 10, 3, 0), cfg), false, '03:00 不在')
+})
+
+test('峰时：普通闲聊不接话，理由记 peak_quiet', () => {
+  const cfg = cfgOf({})
+  const r = decide(groupMsg({ content: '今天好热啊' }), cfg, createGateState(), {
+    appId: APP, now: at(2026, 11, 10, 10, 30), random: () => 0,
+  })
+  assert.equal(r.answer, false)
+  assert.equal(r.reason, 'peak_quiet')
+})
+
+test('峰时：提问打分再高也不接（省话优先于抓问题）', () => {
+  const cfg = cfgOf({})
+  const r = decide(groupMsg({ content: '有没有人知道这个报错怎么修？' }), cfg, createGateState(), {
+    appId: APP, now: at(2026, 11, 10, 10, 30), random: () => 0,
+  })
+  assert.equal(r.answer, false)
+  assert.equal(r.reason, 'peak_quiet')
+})
+
+test('峰时：@ / 点名 / 主人 照旧一票通过', () => {
+  const cfg = cfgOf({})
+  const now = at(2026, 11, 10, 10, 30)
+  const mention = decide(groupMsg({ rawEventType: 'GROUP_AT_MESSAGE_CREATE', content: '在吗' }), cfg, createGateState(), { appId: APP, now })
+  assert.equal(mention.reason, 'direct_mention')
+  const named = decide(groupMsg({ content: '鲸鱼你觉得呢' }), cfg, createGateState(), { appId: APP, now })
+  assert.equal(named.reason, 'name_call')
+})
+
+test('峰时：命中兴趣词仍然放行（走后面的概率）', () => {
+  const cfg = cfgOf({ interestKeywords: ['显卡'], interestProbability: 100 })
+  const r = decide(groupMsg({ content: '新显卡到了' }), cfg, createGateState(), {
+    appId: APP, now: at(2026, 11, 10, 10, 30), random: () => 0,
+  })
+  assert.equal(r.answer, true)
+  assert.equal(r.reason, 'interest')
+})
+
+test('峰时：关掉 peakQuietAllowInterest 后连兴趣词也不接', () => {
+  const cfg = cfgOf({ interestKeywords: ['显卡'], interestProbability: 100, peakQuietAllowInterest: false })
+  const r = decide(groupMsg({ content: '新显卡到了' }), cfg, createGateState(), {
+    appId: APP, now: at(2026, 11, 10, 10, 30), random: () => 0,
+  })
+  assert.equal(r.answer, false)
+  assert.equal(r.reason, 'peak_quiet')
+})
+
+test('谷时：峰时开关不影响正常接话', () => {
+  const cfg = cfgOf({ interestKeywords: ['显卡'], interestProbability: 100 })
+  const r = decide(groupMsg({ content: '新显卡到了' }), cfg, createGateState(), {
+    appId: APP, now: at(2026, 11, 10, 20, 0), random: () => 0,
+  })
+  assert.equal(r.answer, true)
+  assert.equal(r.reason, 'interest')
+})
+
+test('关掉峰时省话后，峰时照常按原规则走', () => {
+  const cfg = cfgOf({ peakQuietEnabled: false, interestKeywords: ['显卡'], interestProbability: 100 })
+  const r = decide(groupMsg({ content: '新显卡到了' }), cfg, createGateState(), {
+    appId: APP, now: at(2026, 11, 10, 10, 30), random: () => 0,
+  })
+  assert.equal(r.answer, true)
 })

@@ -144,6 +144,21 @@ dsh plugin --profile <你的 profile> add link:/path/to/dsh-qqbot-gate
 没说话的那条会打一行日志：`不回(no_trigger) 群=... 人=... 文本="..."`。
 **它同时仍然进了群历史缓冲**，只是没进 agent。
 
+### 峰时省话（`peakQuietEnabled`，默认开）
+
+DeepSeek 有峰谷计价，贵的时段少说话等于直接省钱。**峰时只放行强唤醒和兴趣词**，
+提问打分、基础冒泡、冷场全部不接。
+
+| 项 | 值 |
+| --- | --- |
+| 峰时时段 | 默认 `09:00-12:00,14:00-18:00`（北京时间，可填多段、可跨零点） |
+| 只算工作日 | 默认开——**周末全天是谷价**（现行规则：高峰 = 周一至周五，不含法定节假日） |
+| 兴趣词 | 仍然放行（`peakQuietAllowInterest`，关掉就只剩 @/点名/主人） |
+| 不含节假日 | ⚠️ **不识别中国法定节假日与调休**，长假期间会被当工作日算成峰时；想全天省话就关掉总开关 |
+
+> 现行峰谷规则是 2026-08-17 起的：高峰＝工作日 09:00-12:00 + 14:00-18:00，其余全部谷时，谷价正好是峰价一半。
+> 旧的「每日 00:30-08:30 错峰优惠」2025-09 已取消，别按那个配。
+
 ---
 
 ## 门三 · 旁听注入（`mode: gate`）
@@ -310,6 +325,12 @@ QQ 群会话空闲 3 小时也会跑 dream，于是「记完了。这一轮落�
     fatigueWindowSeconds: 300
     coldGroupIdleMinutes: 0   # 0 = 关闭冷场唤醒
     groupMergeAcrossSenders: false  # 群里不同人的话要不要拼成一条
+
+    # ── 峰时省话（DeepSeek 贵价时段只回强唤醒和兴趣词）──
+    peakQuietEnabled: true
+    peakQuietWindows: '09:00-12:00,14:00-18:00'  # 北京时间，可多段、可跨零点
+    peakQuietWeekdaysOnly: true   # 周末全天谷价，不算峰时
+    peakQuietAllowInterest: true  # 关掉 = 峰时只回 @ / 点名 / 主人
 
     # ── 门三：旁听注入（只在 gate 模式生效）──
     injectEnabled: true
